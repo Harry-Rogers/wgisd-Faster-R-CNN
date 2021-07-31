@@ -35,6 +35,9 @@ from captum.attr import NoiseTunnel
 from captum.attr import visualization as viz
 import torch.nn.functional as F
 
+import torch.nn.utils.prune as prune
+
+
 class XMLHandler:
     def __init__(self, xml_path: str or Path):
         self.xml_path = Path(xml_path)
@@ -126,7 +129,7 @@ class GerpsFinder(object):
         return len(self.imgs)
 
 def get_model_instance_segmentation(num_classes):
-    model = QAT_FASTER_RCNN.fasterrcnn_mobilenet_v3_large_320_fpn(pretrained=True)
+    model = QAT_FASTER_RCNN.fasterrcnn_mobilenet_v3_large_fpn(pretrained=True)
     # Fuse layers
     for m in model.modules():
         print(model.modules)
@@ -197,8 +200,39 @@ def get_transform(train):
         transforms.append(T.RandomHorizontalFlip(0.5))
     return T.Compose(transforms)
 
+def remove_parameters(model):
+
+    for module_name, module in model.named_modules():
+        if isinstance(module, torch.nn.Conv2d):
+            try:
+                prune.remove(module, "weight")
+            except:
+                pass
+            try:
+                prune.remove(module, "bias")
+            except:
+                pass
+        elif isinstance(module, torch.nn.Linear):
+            try:
+                prune.remove(module, "weight")
+            except:
+                pass
+            try:
+                prune.remove(module, "bias")
+            except:
+                pass
+
+    return model
+
+def save_model(model, model_dir, model_filename):
+
+    if not os.path.exists(model_dir):
+        os.makedirs(model_dir)
+    model_filepath = os.path.join(model_dir, model_filename)
+    torch.save(model.state_dict(), model_filepath)
 
 def main():
+
     # train on the GPU or on the CPU, if a GPU is not available
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
@@ -209,11 +243,9 @@ def main():
     dataset_test = GerpsFinder('./', get_transform(train=False),img_folder='test/imgs/', xml_folder='test/annos/')
 
 
-   
-
-    # define training and validation data loaders
+   # define training and validation data loaders
     data_loader = torch.utils.data.DataLoader(
-        dataset, batch_size=8, shuffle=True, num_workers=0,
+        dataset, batch_size=2, shuffle=True, num_workers=0,
         collate_fn=utils.collate_fn)
 
     data_loader_test = torch.utils.data.DataLoader(
@@ -235,25 +267,27 @@ def main():
                                                    step_size=3,
                                                    gamma=0.1)
 
+
     # let's train it for 10 epochs
     num_epochs = 25
-    
+
     #interp(model)
     for epoch in range(num_epochs):
         # train for one epoch, printing every 10 iterations
-        train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq=10)
+        train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq=10, global_pruning=True, conv2d_prune_amount=0.01, linear_prune_amount=0.9)
         # update the learning rate
         lr_scheduler.step()
         # evaluate on the test dataset
     evaluate(model, data_loader_test, device=device)
-    
+    remove_parameters(model=model)
     model_dir = "saved_models"
     model_filename = "tv-training-Mob.pt"
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
     model_filepath = os.path.join(model_dir, model_filename)
-    torch.jit.save(torch.jit.script(model), model_filepath)
-    
+#    torch.jit.save(torch.jit.script(model), model_filepath)
+    save_model(model=model, model_dir=model_dir, model_filename=model_filename)
+   
     fused_model = copy.deepcopy(model)
 
     torch.backends.quantized.engine = 'fbgemm'
@@ -262,11 +296,12 @@ def main():
     torch.quantization.prepare_qat(fused_model, inplace=True)
     
     for epoch in range(num_epochs):
-        train_one_epoch(fused_model, optimizer, data_loader, device, epoch, print_freq=10)
+        train_one_epoch(fused_model, optimizer, data_loader, device, epoch, print_freq=10,global_pruning=True, conv2d_prune_amount=0.98, linear_prune_amount=0)
         # update the learning rate
         lr_scheduler.step()
         # evaluate on the test dataset
     evaluate(fused_model, data_loader_test, device=device) 
+    remove_parameters(model=fused_model)
     fused_model.to('cpu:0')
 
     # Using high-level static quantization wrapper
@@ -280,7 +315,8 @@ def main():
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
     model_filepath = os.path.join(model_dir, model_filename)
-    torch.jit.save(torch.jit.script(fused_model), model_filepath)
+    #torch.jit.save(torch.jit.script(fused_model), model_filepath)
+    save_model(model=fused_model, model_dir=model_dir, model_filename=model_filename)
     print("That's it!")
     
 if __name__ == "__main__":
