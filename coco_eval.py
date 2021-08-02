@@ -15,6 +15,9 @@ from collections import defaultdict
 
 import utils
 
+import io
+import sys
+
 
 class CocoEvaluator(object):
     def __init__(self, coco_gt, iou_types):
@@ -44,6 +47,7 @@ class CocoEvaluator(object):
             img_ids, eval_imgs = evaluate(coco_eval)
 
             self.eval_imgs[iou_type].append(eval_imgs)
+        
 
     def synchronize_between_processes(self):
         for iou_type in self.iou_types:
@@ -57,8 +61,10 @@ class CocoEvaluator(object):
     def summarize(self):
         for iou_type, coco_eval in self.coco_eval.items():
             print("IoU metric: {}".format(iou_type))
+                       
             coco_eval.summarize()
-
+            
+            
     def prepare(self, predictions, iou_type):
         if iou_type == "bbox":
             return self.prepare_for_coco_detection(predictions)

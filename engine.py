@@ -5,12 +5,15 @@ import torch
 
 import torchvision.models.detection.mask_rcnn
 
+import torch.nn.utils.prune as prune
+
 from coco_utils import get_coco_api_from_dataset
 from coco_eval import CocoEvaluator
 import utils
 
+import io
 
-def train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq):
+def train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq, global_pruning, conv2d_prune_amount, linear_prune_amount):
     model.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -22,7 +25,35 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq):
         warmup_iters = min(1000, len(data_loader) - 1)
 
         lr_scheduler = utils.warmup_lr_scheduler(optimizer, warmup_iters, warmup_factor)
-
+    
+    
+    
+    if global_pruning == True:
+            # Global pruning
+            # I would rather call it grouped pruning.
+            parameters_to_prune = []
+            for module_name, module in model.named_modules():
+                if isinstance(module, torch.nn.Conv2d):
+                    parameters_to_prune.append((module, "weight"))
+            prune.global_unstructured(
+                parameters_to_prune,
+                pruning_method=prune.L1Unstructured,
+                amount=conv2d_prune_amount,
+            )
+    else:
+        
+        for module_name, module in model.named_modules():
+            if isinstance(module, torch.nn.Conv2d):
+                prune.l1_unstructured(module,
+                                          name="weight",
+                                          amount=conv2d_prune_amount)
+            elif isinstance(module, torch.nn.Linear):
+                    prune.l1_unstructured(module,
+                                          name="weight",
+                                          amount=linear_prune_amount)
+    
+    
+    
     for images, targets in metric_logger.log_every(data_loader, print_freq, header):
         images = list(image.to(device) for image in images)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
@@ -98,11 +129,24 @@ def evaluate(model, data_loader, device):
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
+    
+    print(metric_logger)
+    #time.sleep(5)
     print("Averaged stats:", metric_logger)
     coco_evaluator.synchronize_between_processes()
 
     # accumulate predictions from all images
     coco_evaluator.accumulate()
-    coco_evaluator.summarize()
+    old_stdout = sys.stdout
+
+    new_stdout = io.StringIO()
+
+    sys.stdout = new_stdout
+    test = coco_evaluator.summarize()
+    output = new_stdout.getvalue()
+            
+    sys.stdout = old_stdout
+    print("HEREHRE")
+    print(str(test))
     torch.set_num_threads(n_threads)
-    return coco_evaluator
+    return coco_evaluator.summarize(), output
