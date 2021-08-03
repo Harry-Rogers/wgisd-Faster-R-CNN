@@ -424,6 +424,19 @@ def main():
     print(metric_logger)
     #print(metric_logger[0])
     #print(metric_logger[:60])
+    AP_1 = metric_logger[91:97]
+    AP_2 = metric_logger[170:176]
+    AP_3 = metric_logger[251:257]
+    AP_4 = metric_logger[331:337]#Negative can ignore also no small images in data
+    AP_5 = metric_logger[412:418]
+    AP_6 = metric_logger[492:498]
+    
+    AR_1 = metric_logger[572:578]
+    AR_2 = metric_logger[652:658]
+    AR_3 = metric_logger[732:738]
+    AR_4 = metric_logger[812:818]#Negative can ignore
+    AR_5 = metric_logger[892:898]
+    AR_6 = metric_logger[973:979]
 
     #vid(model, data_loader_test)
     model_dir = "saved_models"
