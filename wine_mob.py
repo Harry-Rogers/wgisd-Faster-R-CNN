@@ -39,6 +39,13 @@ from captum.attr import Occlusion
 from captum.attr import NoiseTunnel
 from captum.attr import visualization as viz
 import torch.nn.functional as F
+import glob
+import time
+
+import collections
+import PIL.ImageDraw as ImageDraw
+import random
+import PIL.ImageFont as ImageFont
 
 import torch.nn.utils.prune as prune
 
@@ -160,49 +167,6 @@ def get_model_instance_segmentation(num_classes):
     return model
 
 
-def interp(model):
-    transform = transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-        transforms.ToTensor()
-    ])
-    transform_normalize = transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225]
-    )
-
-    model.eval()
-    model.to('cpu:0')
-    img = Image.open('test/imgs/CDY_2015.jpg')
-
-    transformed_img = transform(img)
-
-    input = transform_normalize(transformed_img)
-    input = input.unsqueeze(0)
-
-    output = model(input)
-    print(output)
-    output = F.softmax(output, dim=1)
-    prediction_score, pred_label_idx = torch.topk(output, 1)
-
-    integrated_gradients = IntegratedGradients(model)
-    attributions_ig = integrated_gradients.attribute(
-        input, target=pred_label_idx, n_steps=200)
-    default_cmap = LinearSegmentedColormap.from_list('custom blue',
-                                                     [(0, '#ffffff'),
-                                                      (0.25, '#000000'),
-                                                         (1, '#000000')], N=256)
-
-    _ = viz.visualize_image_attr(np.transpose(attributions_ig.squeeze().cpu().detach().numpy(), (1, 2, 0)),
-                                 np.transpose(transformed_img.squeeze(
-                                 ).cpu().detach().numpy(), (1, 2, 0)),
-                                 method='heat_map',
-                                 cmap=default_cmap,
-                                 show_colorbar=True,
-                                 sign='positive',
-                                 outlier_perc=1)
-
-
 def get_transform(train):
     transforms = []
     transforms.append(T.ToTensor())
@@ -235,24 +199,6 @@ def remove_parameters(model):
 
     return model
 
-
-def save_model(model, model_dir, model_filename):
-
-    if not os.path.exists(model_dir):
-        os.makedirs(model_dir)
-    model_filepath = os.path.join(model_dir, model_filename)
-    torch.save(model.state_dict(), model_filepath)
-
-# Does not work could just call one image?
-
-
-import glob
-import time
-
-import collections
-import PIL.ImageDraw as ImageDraw
-import random
-import PIL.ImageFont as ImageFont
 
 STANDARD_COLORS = [
     'Pink', 'Green', 'SandyBrown',
@@ -319,7 +265,7 @@ def draw_box(image, boxes, classes, scores, category_index, thresh=0.5, line_thi
                    (right, top), (left, top)], width=line_thickness, fill=color)
         draw_text(draw, box_to_display_str_map, box, left, right, top, bottom, color)
 
-def visual_test(model, model_name, device):
+def visual_test(model, model_name, device, thresh):
         # read class_indict
     category_index = {"Grape": 1}
     
@@ -351,7 +297,7 @@ def visual_test(model, model_name, device):
                      predict_classes,
                      predict_scores,
                      category_index,
-                     thresh=0.5,
+                     thresh=thresh,
                      line_thickness=15)
             plt.imshow(original_img)
             plt.savefig(str(i) + model_name + ".jpg")
@@ -370,7 +316,7 @@ def visual_test(model, model_name, device):
 
 
 def main():
-
+    
     # train on the GPU or on the CPU, if a GPU is not available
     device = torch.device(
         'cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -378,10 +324,8 @@ def main():
     # our dataset has two classes only - background and person
     num_classes = 2
     # use our dataset and defined transformations
-    dataset = GerpsFinder('./', get_transform(train=True),
-                          img_folder='train/imgs/', xml_folder='train/annos/')
-    dataset_test = GerpsFinder(
-        './', get_transform(train=False), img_folder='test/imgs/', xml_folder='test/annos/')
+    dataset = GerpsFinder('./', get_transform(train=True), img_folder='train/imgs/', xml_folder='train/annos/')
+    dataset_test = GerpsFinder('./', get_transform(train=False), img_folder='test/imgs/', xml_folder='test/annos/')
 
    # define training and validation data loaders
     data_loader = torch.utils.data.DataLoader(
@@ -420,10 +364,10 @@ def main():
         # evaluate on the test dataset
     remove_parameters(model=model)
     coco_eval, metric_logger = evaluate(model, data_loader_test, device=device)
-    print("HERE")
-    print(metric_logger)
-    #print(metric_logger[0])
-    #print(metric_logger[:60])
+    #Change thresh manually
+    visual_test(model, "mobile_net", device, thresh=0.6)
+    
+    # GA VALUES
     AP_1 = metric_logger[91:97]
     AP_2 = metric_logger[170:176]
     AP_3 = metric_logger[251:257]
@@ -438,7 +382,6 @@ def main():
     AR_5 = metric_logger[892:898]
     AR_6 = metric_logger[973:979]
 
-    #vid(model, data_loader_test)
     model_dir = "saved_models"
     model_filename = "tv-training-Mob.pt"
     visual_test(model, "Normal", 'cuda')
@@ -472,7 +415,7 @@ def main():
 
     fused_model.to('cpu:0')
     
-    visual_test(fused_model, "QAT_AWARE", 'cpu')
+    visual_test(fused_model, "QAT_AWARE_MOBILE", 'cpu', thresh=0.6)
 
     # Using high-level static quantization wrapper
     # The above steps, including torch.quantization.prepare, calibrate_model, and torch.quantization.convert, are also equivalent to
