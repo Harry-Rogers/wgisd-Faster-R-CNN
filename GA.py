@@ -7,7 +7,9 @@ Created on Fri Aug  6 14:57:34 2021
 """
 
 import numpy as np
-#import localutils
+from engine import evaluate
+import torch
+
 
 
 class Individual(object):
@@ -103,30 +105,49 @@ class Individual(object):
 
         # create new Individual(offspring) using
         # generated chromosome for offspring
+        print("CHROMS")
+        print(Individual(child_chromosome))
         return Individual(child_chromosome)
+    
+    
 
-    def cal_fitness(self, network, dataloader):
+    
+    
+    def cal_fitness(self, model, data_loader_test, device):
         """
-		Calculate fittness score, it is the number of
-		characters in string which differ from target
-		string.
+		NEED A WAY TO SEE IF WEIGHT HAS BEEN MODIFIED
+        COULD DO UNIQUE FROM NP
+        MIGHT BE WAY IN TORCH
 		"""
-
-        i = 0
-        for l in range(1, len(network.layers)):
-            w = network.layers[l].get_weights()
-            if isinstance(w, list):
-                continue
-            #print(self.chromosome)
-            m1 = self.chromosome[l - 1]
-            #print("M1")
-            #print(m1)
-            #print("\n")
-            network.layers[l].set_weights([m1, w])
-            i += 1
-
+        for i in range(len(self.chromosome)):
+            m1 = self.chromosome[i]
+            m1_check = torch.tensor(m1)
+            if m1_check.shape == model.backbone.body.conv1.weight.shape:
+                m1 = torch.nn.Parameter(torch.tensor(m1, device='cuda:0'), False)
+                m1 = torch.squeeze(m1, 0)
+                model.backbone.body.conv1.weight = m1
+            elif m1_check.shape == model.backbone.body.layer1[0].conv1.weight.shape:
+                m1 = torch.nn.Parameter(torch.tensor(m1, device='cuda:0'), False)
+                m1 = torch.squeeze(m1, 0)
+                model.backbone.body.conv1.weight = m1
     
         coco_eval, metric_logger = evaluate(model, data_loader_test, device=device)
         # L might be tf related?
         # a is eval score can just pass coco scores back
-        return a
+        AP_1 = metric_logger[91:97]
+        AP_2 = metric_logger[170:176]
+        AP_3 = metric_logger[251:257]
+        AP_4 = metric_logger[331:337]#Negative can ignore also no small images in data
+        AP_5 = metric_logger[412:418]
+        AP_6 = metric_logger[492:498]
+        
+        AR_1 = metric_logger[572:578]
+        AR_2 = metric_logger[652:658]
+        AR_3 = metric_logger[732:738]
+        AR_4 = metric_logger[812:818]#Negative can ignore
+        AR_5 = metric_logger[892:898]
+        AR_6 = metric_logger[973:979]
+        
+        fitness = float(AP_1) * float(AP_2) * float(AP_3) * float(AP_5) * float(AP_6) * float(AR_1) * float(AR_2) * float(AR_3) * float(AR_5) * float(AR_6)
+        
+        return fitness

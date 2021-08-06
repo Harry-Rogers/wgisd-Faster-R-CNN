@@ -170,9 +170,17 @@ def get_transform(train):
 def getmasks(model):
     masks = []
     print(model.modules)
+    #time.sleep(20)
     masks.append(model.backbone.body.conv1.weight)
-    print(masks)
-    print(type(masks))
+    masks.append(model.backbone.body.layer1[0].conv1.weight)
+    #masks.append(model.backbone.body.layer2.conv1.weight)
+    #masks.append(model.backbone.body.layer1.conv1.weight)
+    #masks.append(model.backbone.body.layer1.conv1.weight)
+    #masks.append(model.backbone.body.layer1.conv1.weight)
+    #masks.append(model.backbone.body.layer1.conv1.weight)
+    #masks.append(model.backbone.body.layer1.conv1.weight)
+    #print(masks)
+    #print(type(masks))
     #model.backbone.
     #    masks.append(child)
     #for i in model.backbone.named_parameters:
@@ -236,36 +244,46 @@ def main():
     
     popsize = 100
     shapelist = [i.shape for i in masks]
-    print(shapelist)
+    #print(shapelist)
     population = make_population(popsize, shapelist)
-    
+    #print(population)
     maxgenerations = 50
     generation = 1
     #Do x generations
-    while generation < maxgenerations:
-        sorted_population = sorted(population, key=lambda x: x.cal_fitness(model, data_loader, device), reverse=True)
-        elitepercent = 2
-        fitpercent = 20
-
-        # Perform Elitism, that mean 10% of fittest population
-        # goes to the next generation
+    for epoch in range(num_epochs):
+        train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq=10,
+                        global_pruning=False, conv2d_prune_amount=0, linear_prune_amount=0)
+        lr_scheduler.step()
+        coco_eval, metric_logger = evaluate(model, data_loader_test, device=device)
         
-
+        while generation < maxgenerations:
+                sorted_population = sorted(population, key=lambda x: x.cal_fitness(model, data_loader_test, device), reverse=True)
+                #print("here")
+                fitpercent = 20
         
-        s = 10
-        new_generation = sorted_population[:s]
+                # Perform Elitism, that mean 10% of fittest population
+                # goes to the next generation
+                
+               
+                s = 10
+                new_generation = sorted_population[:s]
+                #print(new_generation)
+                # From 20% of fittest population, Individuals
+                # will mate to produce offspring
+                s = 90
+                for _ in range(s):
+                    parent1 = np.random.choice(sorted_population[:fitpercent])
+                    parent2 = np.random.choice(sorted_population[:fitpercent])
+                    child = parent1.mate(parent2)
+                    new_generation.append(child)
+            
+            
+                population = new_generation
+                print(population)
+                #acc = new_generation[0].cal_fitness(model, data_loader_test, device)
+                #print("Generation: {}\tAccuracy: {:.4f}, population size: {}".format(generation, acc, len(population)))
+                generation += 1 
 
-        # From 20% of fittest population, Individuals
-        # will mate to produce offspring
-        s = 90
-        for _ in range(s):
-            parent1 = np.random.choice(sorted_population[:fitpercent])
-            parent2 = np.random.choice(sorted_population[:fitpercent])
-            child = parent1.mate(parent2)
-            new_generation.append(child)
-    
-    
-    
     
     
     
@@ -300,19 +318,7 @@ def main():
     #Change thresh manually
     
     # GA VALUES
-    AP_1 = metric_logger[91:97]
-    AP_2 = metric_logger[170:176]
-    AP_3 = metric_logger[251:257]
-    AP_4 = metric_logger[331:337]#Negative can ignore also no small images in data
-    AP_5 = metric_logger[412:418]
-    AP_6 = metric_logger[492:498]
     
-    AR_1 = metric_logger[572:578]
-    AR_2 = metric_logger[652:658]
-    AR_3 = metric_logger[732:738]
-    AR_4 = metric_logger[812:818]#Negative can ignore
-    AR_5 = metric_logger[892:898]
-    AR_6 = metric_logger[973:979]
 
     
 
