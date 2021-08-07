@@ -12,7 +12,8 @@ import torch
 
 from torchvision.ops import misc as misc_nn_ops
 from torchvision.models._utils import IntermediateLayerGetter
-from torchvision.models.quantization import resnet, mobilenetv3
+from torchvision.models.quantization import mobilenetv3
+import qresnet as resnet
 #import resnet152Q 
 
 
