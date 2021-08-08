@@ -6,20 +6,13 @@ import numpy as np
 import torch
 from PIL import Image
 
-import cv2
 from matplotlib import pyplot as plt
 
-import io
 
 import copy
-import torch.nn as nn
 
-import torchvision
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
-from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
 
-from torchvision.models.detection.faster_rcnn import FastRCNNPredictor, FasterRCNN
-from torchvision.models.detection.backbone_utils import resnet_fpn_backbone
 
 from engine import train_one_epoch, evaluate
 import utils
@@ -29,16 +22,9 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 from typing import Dict
 import QAT_FASTER_RCNN
-from prune_utils import evaluate_model, create_classification_report
 
-from matplotlib.colors import LinearSegmentedColormap
 from torchvision import transforms
-from captum.attr import IntegratedGradients
-from captum.attr import GradientShap
-from captum.attr import Occlusion
-from captum.attr import NoiseTunnel
-from captum.attr import visualization as viz
-import torch.nn.functional as F
+
 import glob
 import time
 
@@ -48,9 +34,6 @@ import random
 import PIL.ImageFont as ImageFont
 
 import torch.nn.utils.prune as prune
-
-import matplotlib.pyplot as plt
-import matplotlib.image as mpimg
 
 
 class XMLHandler:
@@ -143,24 +126,15 @@ class GerpsFinder(object):
 
 
 def get_model_instance_segmentation(num_classes):
-    model = QAT_FASTER_RCNN.fasterrcnn_resnet50_fpn(pretrained=True)
-    print(model)
-    fused_model = torch.quantization.fuse_modules(model,[["backbone.body.conv1", "backbone.body.relu"]], inplace=True)
-    for module_name, module in fused_model.named_children():
-        print(module_name)
-        if "layer" in module_name:
-            for basic_block_name, basic_block in module.named_children():
-                torch.quantization.fuse_modules(basic_block, [['conv1', 'relu1'], ['conv2', 'relu2'], ['conv3']], inplace=True)
-                for sub_block_name, sub_block in basic_block.named_children():
-                    if sub_block_name == "downsample":
-                        torch.quantization.fuse_modules(sub_block, [["0", "1"]], inplace=True)
+    model = QAT_FASTER_RCNN.fasterrcnn_resnet50_fpn(pretrained=True, trainable_backbone_layers=5)
+    
 
     # get number of input features for the classifier
-    in_features = fused_model.roi_heads.box_predictor.cls_score.in_features
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
     # replace the pre-trained head with a new one
-    fused_model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
 
-    return fused_model
+    return model
 
 def get_transform(train):
     transforms = []
@@ -309,9 +283,18 @@ def visual_test(model, model_name, device, thresh):
                 predict += str(score) + ' ' + str_box
             preds.append(predict)
 
+def set_random_seeds(random_seed=0):
+
+    torch.manual_seed(random_seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    np.random.seed(random_seed)
+    random.seed(random_seed)
 
 def main():
-    
+    random_seed = 0
+    set_random_seeds(random_seed=random_seed)
+
     # train on the GPU or on the CPU, if a GPU is not available
     device = torch.device(
         'cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -324,7 +307,7 @@ def main():
 
    # define training and validation data loaders
     data_loader = torch.utils.data.DataLoader(
-        dataset, batch_size=8, shuffle=True, num_workers=0,
+        dataset, batch_size=2, shuffle=True, num_workers=0,
         collate_fn=utils.collate_fn)
 
     data_loader_test = torch.utils.data.DataLoader(
@@ -347,7 +330,7 @@ def main():
                                                    gamma=0.1)
 
     # let's train it for 10 epochs
-    num_epochs = 25
+    num_epochs = 100
 
     # interp(model)
     for epoch in range(num_epochs):
@@ -360,26 +343,12 @@ def main():
     remove_parameters(model=model)
     coco_eval, metric_logger = evaluate(model, data_loader_test, device=device)
     #Change thresh manually
-    visual_test(model, "res_net", device, thresh=0.6)
+    #visual_test(model, "res_net", device, thresh=0.6)
     
-    # GA VALUES
-    AP_1 = metric_logger[91:97]
-    AP_2 = metric_logger[170:176]
-    AP_3 = metric_logger[251:257]
-    AP_4 = metric_logger[331:337]#Negative can ignore also no small images in data
-    AP_5 = metric_logger[412:418]
-    AP_6 = metric_logger[492:498]
-    
-    AR_1 = metric_logger[572:578]
-    AR_2 = metric_logger[652:658]
-    AR_3 = metric_logger[732:738]
-    AR_4 = metric_logger[812:818]#Negative can ignore
-    AR_5 = metric_logger[892:898]
-    AR_6 = metric_logger[973:979]
 
     model_dir = "saved_models"
     model_filename = "tv-training-Mob.pt"
-    visual_test(model, "Normal", 'cuda')
+    #visual_test(model, "Normal", 'cuda')
     
     
     if not os.path.exists(model_dir):
@@ -388,6 +357,15 @@ def main():
     torch.jit.save(torch.jit.script(model), model_filepath)
 
     fused_model = copy.deepcopy(model)
+    fused_model = torch.quantization.fuse_modules(model,[["backbone.body.conv1", "backbone.body.relu"]], inplace=True)
+    for module_name, module in fused_model.named_children():
+        print(module_name)
+        if "layer" in module_name:
+            for basic_block_name, basic_block in module.named_children():
+                torch.quantization.fuse_modules(basic_block, [['conv1', 'relu1'], ['conv2', 'relu2'], ['conv3']], inplace=True)
+                for sub_block_name, sub_block in basic_block.named_children():
+                    if sub_block_name == "downsample":
+                        torch.quantization.fuse_modules(sub_block, [["0", "1"]], inplace=True)
     
     del model
     torch.cuda.empty_cache()
@@ -410,7 +388,7 @@ def main():
 
     fused_model.to('cpu:0')
     
-    visual_test(fused_model, "QAT_AWARE_RES", 'cpu', thresh=0.6)
+   # visual_test(fused_model, "QAT_AWARE_RES", 'cpu', thresh=0.6)
 
     # Using high-level static quantization wrapper
     # The above steps, including torch.quantization.prepare, calibrate_model, and torch.quantization.convert, are also equivalent to
