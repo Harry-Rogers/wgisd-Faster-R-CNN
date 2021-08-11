@@ -251,12 +251,14 @@ def visual_test(model, model_name, device, thresh):
         img = data_transform(original_img)
         # expand batch dimension
         img = torch.unsqueeze(img, dim=0)
-    
+        img = list(img)
         model.eval()
         with torch.no_grad():
             since = time.time()
-            predictions = model(img.to(device))[0]
+            predictions = model(img)
             print('{} Time:{}s'.format(i, time.time() - since))
+            predictions = list(predictions[1])
+            predictions = predictions[0]
             predict_boxes = predictions["boxes"].to("cpu").numpy()
             predict_classes = predictions["labels"].to("cpu").numpy()
             predict_scores = predictions["scores"].to("cpu").numpy()
@@ -282,6 +284,8 @@ def visual_test(model, model_name, device, thresh):
                     str_box += str(b) + ' '
                 predict += str(score) + ' ' + str_box
             preds.append(predict)
+            
+
 
 def set_random_seeds(random_seed=0):
 
@@ -292,13 +296,16 @@ def set_random_seeds(random_seed=0):
     random.seed(random_seed)
 
 def main():
+    
+    #model = torch.jit.load('./saved_models/tv-training-QAT-Res50.pt', map_location="cpu:0")
+    #print(model)
     random_seed = 0
     set_random_seeds(random_seed=random_seed)
 
     # train on the GPU or on the CPU, if a GPU is not available
     device = torch.device(
         'cuda') if torch.cuda.is_available() else torch.device('cpu')
-
+    #visual_test(model=model, model_name="a", device='cpu', thresh=0.8)
     # our dataset has two classes only - background and person
     num_classes = 2
     # use our dataset and defined transformations
@@ -328,9 +335,10 @@ def main():
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer,
                                                    step_size=3,
                                                    gamma=0.1)
-
+    print(model)
+    #time.sleep(5)
     # let's train it for 10 epochs
-    num_epochs = 100
+    num_epochs = 1
 
     # interp(model)
     for epoch in range(num_epochs):
@@ -347,7 +355,7 @@ def main():
     
 
     model_dir = "saved_models"
-    model_filename = "tv-training-Mob.pt"
+    model_filename = "tv-training-Res50.pt"
     #visual_test(model, "Normal", 'cuda')
     
     
@@ -378,6 +386,7 @@ def main():
     torch.quantization.prepare_qat(fused_model, inplace=True)
     
     for epoch in range(num_epochs):
+        
         train_one_epoch(fused_model, optimizer, data_loader, device, epoch, print_freq=10,
                         global_pruning=True, conv2d_prune_amount=0, linear_prune_amount=0)
         # update the learning rate
@@ -397,13 +406,15 @@ def main():
     fused_model = torch.quantization.convert(fused_model, inplace=True)
 
     model_dir = "saved_models"
-    model_filename = "tv-training-QAT-Mob.pt"
+    model_filename = "tv-training-QAT-Res50.pt"
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
     model_filepath = os.path.join(model_dir, model_filename)
     torch.jit.save(torch.jit.script(fused_model), model_filepath)
     
-
+    model = torch.jit.load('./saved_models/tv-training-QAT-Res50.pt', map_location="cpu:0")
+    print(model)
+    visual_test(model=model, model_name="a", device='cpu', thresh=0.8)
     
     print("That's it!")
 
