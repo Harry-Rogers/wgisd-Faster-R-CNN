@@ -14,7 +14,7 @@ import torch.nn as nn
 
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 
-
+import torchvision
 from engine import train_one_epoch, evaluate
 import utils
 import transforms as T
@@ -35,7 +35,9 @@ import random
 import PIL.ImageFont as ImageFont
 
 import torch.nn.utils.prune as prune
-
+from torchvision.models.detection import FasterRCNN
+from torchvision.models.detection.rpn import AnchorGenerator
+from torchsummary import summary
 
 
 class XMLHandler:
@@ -126,16 +128,77 @@ class GerpsFinder(object):
     def __len__(self):
         return len(self.imgs)
 
+from torchvision.ops import misc as misc_nn_ops
+
+class QuantizedModel(nn.Module):
+    def __init__(self, model_fp32):
+
+        super(QuantizedModel, self).__init__()
+        # QuantStub converts tensors from floating point to quantized.
+        # This will only be used for inputs.
+        self.quant = torch.quantization.QuantStub()
+        # DeQuantStub converts tensors from quantized to floating point.
+        # This will only be used for outputs.
+        
+        # FP32 model
+        self.model_fp32 = model_fp32
+        
+        self.dequant = torch.quantization.DeQuantStub()
+
+    def forward(self, x):
+        # manually specify where tensors will be converted from floating
+        # point to quantized in the quantized model
+        x = self.quant(x)
+        x = self.model_fp32(x)
+        # manually specify where tensors will be converted from quantized
+        # to floating point in the quantized model
+        x = self.dequant(x)
+        return x
+
+
 
 def get_model_instance_segmentation(num_classes):
-    model = QAT_FASTER_RCNN.fasterrcnn_mobilenet_v3_large_fpn(pretrained=True)
-    # Fuse layers
-   
-    # get number of input features for the classifier
-    in_features = model.roi_heads.box_predictor.cls_score.in_features
-    # replace the pre-trained head with a new one
-    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+    from torchvision.models.detection import FasterRCNN
+    from torchvision.models.detection.rpn import AnchorGenerator
+    
+    # load a pre-trained model for classification and return
+    #242 MB for v3 large
+    #329MB for v2?
+    # only the features
+    backbone = torchvision.models.quantization.mobilenet_v2(pretrained=True, quantize=False, norm_layer=misc_nn_ops.FrozenBatchNorm2d).features
 
+    backbone = QuantizedModel(backbone)
+    # FasterRCNN needs to know the number of
+    # output channels in a backbone. For mobilenet_v2, it's 1280
+    # so we need to add it here
+    backbone.out_channels = 1280
+    
+    # let's make the RPN generate 5 x 3 anchors per spatial
+    # location, with 5 different sizes and 3 different aspect
+    # ratios. We have a Tuple[Tuple[int]] because each feature
+    # map could potentially have different sizes and
+    # aspect ratios
+    anchor_generator = AnchorGenerator(sizes=((32, 64, 128, 256, 512),),
+                                   aspect_ratios=((0.5, 1.0, 2.0),))
+    
+    # let's define what are the feature maps that we will
+    # use to perform the region of interest cropping, as well as
+    # the size of the crop after rescaling.
+    # if your backbone returns a Tensor, featmap_names is expected to
+    # be [0]. More generally, the backbone should return an
+    # OrderedDict[Tensor], and in featmap_names you can choose which
+    # feature maps to use.
+    roi_pooler = torchvision.ops.MultiScaleRoIAlign(featmap_names=['0'],
+                                                    output_size=7,
+                                                    sampling_ratio=2)
+    
+    # put the pieces together inside a FasterRCNN model
+    model = FasterRCNN(backbone,
+                       num_classes=2,
+                       rpn_anchor_generator=anchor_generator,
+                       box_roi_pool=roi_pooler)
+
+    
     return model
 
 
@@ -254,12 +317,14 @@ def visual_test(model, model_name, device, thresh):
         img = data_transform(original_img)
         # expand batch dimension
         img = torch.unsqueeze(img, dim=0)
-    
+        img = list(img)
         model.eval()
         with torch.no_grad():
             since = time.time()
-            predictions = model(img.to(device))[0]
+            predictions = model(img)
             print('{} Time:{}s'.format(i, time.time() - since))
+            predictions = list(predictions[1])
+            predictions = predictions[0]
             predict_boxes = predictions["boxes"].to("cpu").numpy()
             predict_classes = predictions["labels"].to("cpu").numpy()
             predict_scores = predictions["scores"].to("cpu").numpy()
@@ -295,6 +360,10 @@ def set_random_seeds(random_seed=0):
     random.seed(random_seed)
 
 def main():
+    
+    #model = torch.jit.load('./saved_models/tv-training-QAT-Mob.pt', map_location="cpu:0")
+    #print(model)
+    #time.sleep(10)
     random_seed = 0
     set_random_seeds(random_seed=random_seed)
 
@@ -310,7 +379,7 @@ def main():
 
    # define training and validation data loaders
     data_loader = torch.utils.data.DataLoader(
-        dataset, batch_size=8, shuffle=True, num_workers=0,
+        dataset, batch_size=1, shuffle=True, num_workers=0,
         collate_fn=utils.collate_fn)
 
     data_loader_test = torch.utils.data.DataLoader(
@@ -333,13 +402,17 @@ def main():
                                                    gamma=0.1)
 
     # let's train it for 10 epochs
-    num_epochs = 100
+    num_epochs = 1
+    params = []
+    params = list(model.parameters())
 
-    # interp(model)
+    print(model)
     for epoch in range(num_epochs):
-        # train for one epoch, printing every 10 iterations
+    #    # train for one epoch, printing every 10 iterations
         train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq=10,
-                        global_pruning=True, conv2d_prune_amount=0, linear_prune_amount=0)
+                        global_pruning=True, type_prune="", conv2d_prune_amount=0, linear_prune_amount=0)
+        for i in range(len(params)):
+            print(torch.topk(params[i].grad,1))
         # update the learning rate
         lr_scheduler.step()
         # evaluate on the test dataset
@@ -379,21 +452,28 @@ def main():
     torch.cuda.empty_cache()
     
     fused_model.to(device)
+    print(fused_model)
     
-    torch.backends.quantized.engine = 'qnnpack'
-    quantization_config = torch.quantization.get_default_qconfig('qnnpack')
+    torch.backends.quantized.engine = 'fbgemm'
+    quantization_config = torch.quantization.get_default_qconfig('fbgemm')
     fused_model.qconfig = quantization_config
+    
+    fused_model.rpn.qconfig = None
+    fused_model.roi_heads.qconfig = None
+    #fused_model.box_predictor.qconfig = None
+    print(quantization_config)
+    #fused_model.
     torch.quantization.prepare_qat(fused_model, inplace=True)
     
     for epoch in range(num_epochs):
         train_one_epoch(fused_model, optimizer, data_loader, device, epoch, print_freq=10,
-                        global_pruning=True, conv2d_prune_amount=0, linear_prune_amount=0)
+                        global_pruning=True, type_prune="", conv2d_prune_amount=0, linear_prune_amount=0)
         # update the learning rate
         lr_scheduler.step()
         # evaluate on the test dataset
     remove_parameters(model=fused_model)
     evaluate(fused_model, data_loader_test, device=device)
-
+    
     fused_model.to('cpu:0')
     
     #visual_test(fused_model, "QAT_AWARE_MOBILE", 'cpu', thresh=0.6)
@@ -410,11 +490,11 @@ def main():
         os.makedirs(model_dir)
     model_filepath = os.path.join(model_dir, model_filename)
     torch.jit.save(torch.jit.script(fused_model), model_filepath)
+    print(fused_model)
     
-
     
     print("That's it!")
-
-
+    
+    
 if __name__ == "__main__":
     main()
