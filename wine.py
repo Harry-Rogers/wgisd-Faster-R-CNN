@@ -10,10 +10,11 @@ from matplotlib import pyplot as plt
 
 
 import copy
+import torch.nn as nn
 
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 
-
+import torchvision
 from engine import train_one_epoch, evaluate
 import utils
 import transforms as T
@@ -25,6 +26,12 @@ import QAT_FASTER_RCNN
 
 from torchvision import transforms
 
+import io
+
+
+import torch.utils.model_zoo as model_zoo
+import torch.onnx
+
 import glob
 import time
 
@@ -32,8 +39,11 @@ import collections
 import PIL.ImageDraw as ImageDraw
 import random
 import PIL.ImageFont as ImageFont
-
+from torchvision.ops import misc as misc_nn_ops
 import torch.nn.utils.prune as prune
+from torchvision.models.detection import FasterRCNN
+from torchvision.models.detection.rpn import AnchorGenerator
+from torchsummary import summary
 
 
 class XMLHandler:
@@ -125,16 +135,82 @@ class GerpsFinder(object):
         return len(self.imgs)
 
 
-def get_model_instance_segmentation(num_classes):
-    model = QAT_FASTER_RCNN.fasterrcnn_resnet50_fpn(pretrained=True, trainable_backbone_layers=5)
+class QuantizedModel(nn.Module):
+    def __init__(self, model):
+
+        super(QuantizedModel, self).__init__()
+        # QuantStub converts tensors from floating point to quantized.
+        # This will only be used for inputs.
+        self.quant = torch.quantization.QuantStub()
+        # DeQuantStub converts tensors from quantized to floating point.
+        # This will only be used for outputs.
+        
+        # FP32 model
+        self.model = model
+        
+        self.dequant = torch.quantization.DeQuantStub()
+
+    def forward(self, x):
+        # manually specify where tensors will be converted from floating
+        # point to quantized in the quantized model
+        x = self.quant(x)
+        x = self.model(x)
+        # manually specify where tensors will be converted from quantized
+        # to floating point in the quantized model
+        x = self.dequant(x)
+        return x
+
+
+
+def get_model_instance_segmentation(num_classes):    
+    # load a pre-trained model for classification and return
+    # only the features
+    #model = torchvision.models.quantization.resnet18()
+    # We would use the pretrained ResNet18 as a feature extractor.
+    #for param in model.parameters():
+    #    param.requires_grad = False
+
+    # Modify the last FC layer
+    #num_features = model.fc.in_features
+    #model.fc = nn.Linear(num_features, 5)
+    #model.load_state_dict(torch.load('./saved_models/resnet18_cifar10.pt', map_location="cuda:0"))
+    backbone = torchvision.models.quantization.resnet18(pretrained=True, quantize=False, norm_layer=misc_nn_ops.FrozenBatchNorm2d)
+    backbone = torch.nn.Sequential(*(list(backbone.children())[:-4]))
+
+    backbone = QuantizedModel(backbone)
+    # FasterRCNN needs to know the number of
+    # output channels in a backbone. For mobilenet_v2, it's 1280
+    # so we need to add it here
+    backbone.out_channels = 512
     
+    # let's make the RPN generate 5 x 3 anchors per spatial
+    # location, with 5 different sizes and 3 different aspect
+    # ratios. We have a Tuple[Tuple[int]] because each feature
+    # map could potentially have different sizes and
+    # aspect ratios
+    anchor_generator = AnchorGenerator(sizes=((32, 64, 128, 256, 512),),
+                                   aspect_ratios=((0.5, 1.0, 2.0),))
+    
+    # let's define what are the feature maps that we will
+    # use to perform the region of interest cropping, as well as
+    # the size of the crop after rescaling.
+    # if your backbone returns a Tensor, featmap_names is expected to
+    # be [0]. More generally, the backbone should return an
+    # OrderedDict[Tensor], and in featmap_names you can choose which
+    # feature maps to use.
+    roi_pooler = torchvision.ops.MultiScaleRoIAlign(featmap_names=['0'],
+                                                    output_size=7,
+                                                    sampling_ratio=2)
+    
+    # put the pieces together inside a FasterRCNN model
+    model = FasterRCNN(backbone,
+                       num_classes=2,
+                       rpn_anchor_generator=anchor_generator,
+                       box_roi_pool=roi_pooler)
 
-    # get number of input features for the classifier
-    in_features = model.roi_heads.box_predictor.cls_score.in_features
-    # replace the pre-trained head with a new one
-    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
-
+    
     return model
+
 
 def get_transform(train):
     transforms = []
@@ -257,7 +333,8 @@ def visual_test(model, model_name, device, thresh):
             since = time.time()
             predictions = model(img)
             print('{} Time:{}s'.format(i, time.time() - since))
-            predictions = list(predictions[1])
+           # print(predictions)
+           # predictions = list(predictions[1])
             predictions = predictions[0]
             predict_boxes = predictions["boxes"].to("cpu").numpy()
             predict_classes = predictions["labels"].to("cpu").numpy()
@@ -285,8 +362,6 @@ def visual_test(model, model_name, device, thresh):
                 predict += str(score) + ' ' + str_box
             preds.append(predict)
             
-
-
 def set_random_seeds(random_seed=0):
 
     torch.manual_seed(random_seed)
@@ -296,31 +371,27 @@ def set_random_seeds(random_seed=0):
     random.seed(random_seed)
 
 def main():
-    
-    #model = torch.jit.load('./saved_models/tv-training-QAT-Res50.pt', map_location="cpu:0")
-    #print(model)
     random_seed = 0
     set_random_seeds(random_seed=random_seed)
 
     # train on the GPU or on the CPU, if a GPU is not available
     device = torch.device(
         'cuda') if torch.cuda.is_available() else torch.device('cpu')
-    #visual_test(model=model, model_name="a", device='cpu', thresh=0.8)
-    # our dataset has two classes only - background and person
+
+    # our dataset has two classes only - background and gerp
     num_classes = 2
     # use our dataset and defined transformations
     dataset = GerpsFinder('./', get_transform(train=True), img_folder='train/imgs/', xml_folder='train/annos/')
     dataset_test = GerpsFinder('./', get_transform(train=False), img_folder='test/imgs/', xml_folder='test/annos/')
 
-   # define training and validation data loaders
+   # define training and testing data loaders
     data_loader = torch.utils.data.DataLoader(
-        dataset, batch_size=2, shuffle=True, num_workers=0,
+        dataset, batch_size=4, shuffle=True, num_workers=0,
         collate_fn=utils.collate_fn)
 
     data_loader_test = torch.utils.data.DataLoader(
         dataset_test, batch_size=1, shuffle=True, num_workers=0,
         collate_fn=utils.collate_fn)
- 
     # get the model using our helper function
     model = get_model_instance_segmentation(num_classes)
 
@@ -335,28 +406,46 @@ def main():
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer,
                                                    step_size=3,
                                                    gamma=0.1)
-    print(model)
-    #time.sleep(5)
-    # let's train it for 10 epochs
-    num_epochs = 1
 
+    # Train model
+    num_epochs = 25
+    params = []
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(name, len(param.data))
+            params.append(len(param.data))
+    print(sum(params))
     # interp(model)
+    print(model)
     for epoch in range(num_epochs):
-        # train for one epoch, printing every 10 iterations
-        train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq=10,
-                        global_pruning=True, conv2d_prune_amount=0, linear_prune_amount=0)
+    #    # train for one epoch, printing every 10 iterations
+        train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq=50,
+                        global_pruning=False, type_prune="", conv2d_prune_amount=0.1, linear_prune_amount=0.5, data_loader_test=data_loader_test)
         # update the learning rate
         lr_scheduler.step()
         # evaluate on the test dataset
+        remove_parameters(model=model)
+        coco_eval, metric_logger = evaluate(model, data_loader_test, device=device)
+        f= open("training_res18.txt", "a")
+        f.write(str(metric_logger))
+        f.write("\n")
+        f.close()
     remove_parameters(model=model)
     coco_eval, metric_logger = evaluate(model, data_loader_test, device=device)
     #Change thresh manually
-    #visual_test(model, "res_net", device, thresh=0.6)
-    
+    #visual_test(model, "mobile_net", device, thresh=0.6)
 
     model_dir = "saved_models"
-    model_filename = "tv-training-Res50.pt"
-    #visual_test(model, "Normal", 'cuda')
+    model_filename = "Grapes-Res-Base18.pt"
+    
+    #visual_test(model,"Base", device="cpu", thresh=0.3)
+    #visual_test(model,"Base", device="cpu", thresh=0.4)
+    #visual_test(model,"Base", device="cpu", thresh=0.5)
+    #visual_test(model,"Base", device="cpu", thresh=0.6)
+    #visual_test(model,"Base", device="cpu", thresh=0.7)
+    #visual_test(model,"Base", device="cpu", thresh=0.8)
+    #visual_test(model,"Base", device="cpu", thresh=0.9)
+    
     
     
     if not os.path.exists(model_dir):
@@ -365,39 +454,58 @@ def main():
     torch.jit.save(torch.jit.script(model), model_filepath)
 
     fused_model = copy.deepcopy(model)
-    fused_model = torch.quantization.fuse_modules(model,[["backbone.body.conv1", "backbone.body.relu"]], inplace=True)
+    fused_model = torch.quantization.fuse_modules(fused_model,
+                                                  [["backbone.model.0", "backbone.model.2"]],
+                                                  inplace=True)
     for module_name, module in fused_model.named_children():
-        print(module_name)
-        if "layer" in module_name:
+        if "Sequential" in module_name:
             for basic_block_name, basic_block in module.named_children():
-                torch.quantization.fuse_modules(basic_block, [['conv1', 'relu1'], ['conv2', 'relu2'], ['conv3']], inplace=True)
+                torch.quantization.fuse_modules(
+                    basic_block, [["conv1", "relu"], ["conv2"]],
+                    inplace=True)
                 for sub_block_name, sub_block in basic_block.named_children():
                     if sub_block_name == "downsample":
-                        torch.quantization.fuse_modules(sub_block, [["0", "1"]], inplace=True)
-    
+                        torch.quantization.fuse_modules(sub_block,
+                                                        [["0", "1"]],
+                                                        inplace=True)
+
+    #Free up some space
     del model
     torch.cuda.empty_cache()
+    #Send to device
     
+
     fused_model.to(device)
     
-    torch.backends.quantized.engine = 'fbgemm'
-    quantization_config = torch.quantization.get_default_qconfig('fbgemm')
+    #Setup qconfig properly, can only quantise backbone so set everything else to none
+    torch.backends.quantized.engine = 'qnnpack'
+    quantization_config = torch.quantization.get_default_qconfig('qnnpack')
     fused_model.qconfig = quantization_config
+    
+    fused_model.rpn.qconfig = None
+    fused_model.roi_heads.qconfig = None
+    
+    
     torch.quantization.prepare_qat(fused_model, inplace=True)
     
     for epoch in range(num_epochs):
-        
-        train_one_epoch(fused_model, optimizer, data_loader, device, epoch, print_freq=10,
-                        global_pruning=True, conv2d_prune_amount=0, linear_prune_amount=0)
+        train_one_epoch(fused_model, optimizer, data_loader, device, epoch, print_freq=50,
+                        global_pruning=False, type_prune="", conv2d_prune_amount=0, linear_prune_amount=0,data_loader_test=data_loader_test)
+        # update the learning rate
         # update the learning rate
         lr_scheduler.step()
         # evaluate on the test dataset
+        remove_parameters(model=fused_model)
+        coco_eval, metric_logger = evaluate(fused_model, data_loader_test, device=device)
+        f= open("training_res18_QAT.txt", "a")
+        f.write(str(metric_logger))
+        f.write("\n")
+        f.close()
+        # evaluate on the test dataset
     remove_parameters(model=fused_model)
     evaluate(fused_model, data_loader_test, device=device)
-
-    fused_model.to('cpu:0')
     
-   # visual_test(fused_model, "QAT_AWARE_RES", 'cpu', thresh=0.6)
+    fused_model.to('cpu:0')
 
     # Using high-level static quantization wrapper
     # The above steps, including torch.quantization.prepare, calibrate_model, and torch.quantization.convert, are also equivalent to
@@ -406,18 +514,21 @@ def main():
     fused_model = torch.quantization.convert(fused_model, inplace=True)
 
     model_dir = "saved_models"
-    model_filename = "tv-training-QAT-Res50.pt"
+    model_filename = "QAT-Res18-Base.pt"
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
     model_filepath = os.path.join(model_dir, model_filename)
     torch.jit.save(torch.jit.script(fused_model), model_filepath)
     
-    model = torch.jit.load('./saved_models/tv-training-QAT-Res50.pt', map_location="cpu:0")
-    print(model)
-    visual_test(model=model, model_name="a", device='cpu', thresh=0.8)
+    #visual_test(fused_model,"QAT Base", device="cpu", thresh=0.3)
+    #visual_test(fused_model,"QAT Base", device="cpu", thresh=0.4)
+    #visual_test(fused_model,"QAT Base", device="cpu", thresh=0.5)
+    #visual_test(fused_model,"QAT Base", device="cpu", thresh=0.6)
+    #visual_test(fused_model,"QAT Base", device="cpu", thresh=0.7)
+    #visual_test(fused_model,"QAT Base", device="cpu", thresh=0.8)
+    #visual_test(fused_model,"QAT Base", device="cpu", thresh=0.9)
+    print("Trained and saved!")
     
-    print("That's it!")
-
-
+    
 if __name__ == "__main__":
     main()
