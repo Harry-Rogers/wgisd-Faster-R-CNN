@@ -7,12 +7,13 @@ Created on Mon Aug  2 10:44:40 2021
 
 import torch
 import torchvision
-import io
 import numpy as np
 import cv2 as cv
 import cv2
 from torchvision import transforms
 from PIL import Image
+import glob
+from matplotlib import pyplot as plt
 import collections
 import random
 import PIL.ImageDraw as ImageDraw
@@ -87,13 +88,22 @@ def visual_test(model, model_name, device, frame):
     img.to(device)
     # expand batch dimension
     img = torch.unsqueeze(img, dim=0)
+    #img = torch.quantize_per_tensor(img, 0.1, 0, torch.quint8)
     img = list(img)
     
+    #torch.backends.quantized.engine = 'fbgemm'
+    #quantization_config = torch.quantization.get_default_qconfig('fbgemm')
+    #model.qconfig = quantization_config
+    #torch.quantization.prepare_qat(model, inplace=True)
+    #model = torch.quantization.convert(model, inplace=True)
+    times = []
     model.eval()
     with torch.no_grad():
         since = time.time()
         predictions = model(img)
-        #print('Time:{}s'.format(time.time() - since))
+        res = time.time() - since
+        #Yprint('{} Time:{}s'.format(i, res))
+        times.append(res)
         predictions = list(predictions[1])
         predictions = predictions[0]
         predict_boxes = predictions["boxes"].to(device)
@@ -103,17 +113,12 @@ def visual_test(model, model_name, device, frame):
         #print(type(predict_boxes))
         #print(predict_classes)
         print(predict_scores)
-        thresh=0.8
+        thresh=0.5
         for i in range(0, len(predict_boxes)):
             if predict_scores[i] > thresh:
-                print("here")
-                print(predict_boxes[i])
+                
                 preds.append(predict_boxes[i])
-        #filter_low_thresh(predict_boxes, predict_scores, category_index, category_index, thresh)
-        
-        #draw_box(img, predict_boxes, category_index, line_thickness=20)
-        
-        
+       
         
         rects = []
         for i in range(0, len(preds)):
@@ -133,10 +138,7 @@ def visual_test(model, model_name, device, frame):
         
         
         
-        #iamge = cv2.rectangle(img, predict, pt2, color)
-        #plt.imshow(frame)
-        #plt.savefig(model_name + ".jpg")
-        #plt.show()
+       
             
     
         predict = ""
@@ -148,28 +150,124 @@ def visual_test(model, model_name, device, frame):
                 str_box += str(b) + ' '
             predict += str(score) + ' ' + str_box
         preds.append(predict)
+    return times    
+STANDARD_COLORS = [
+    'Pink', 'Green', 'SandyBrown',
+    'SeaGreen',  'Silver', 'SkyBlue', 'White',
+    'WhiteSmoke', 'YellowGreen'
+]
 
 
-model = torch.jit.load('./saved_models/tv-training-Res.pt', map_location="cpu:0")
+def filter_low_thresh_local(boxes, scores, classes, category_index, thresh, box_to_display_str_map, box_to_color_map, col):
+    for i in range(boxes.shape[0]):
+        if scores[i] > thresh:
+            box = tuple(boxes[i].tolist())  # numpy -> list -> tuple
+            if classes[i] in category_index.keys():
+                class_name = category_index[classes[i]]
+            else:
+                class_name = 'N/A'
+            display_str = str(class_name)
+            display_str = '{}: {}%'.format(display_str, int(100 * scores[i]))
+            box_to_display_str_map[box].append(display_str)
+            box_to_color_map[box] = STANDARD_COLORS[col]
+        else:
+            break  # Scores have been sorted
 
-# Load ScriptModule from io.BytesIO object
-with open('./saved_models/tv-training-Res.pt', 'rb') as f:
-    buffer = io.BytesIO(f.read())
 
-# Load all tensors to the original device
-torch.jit.load(buffer)
 
-# Load all tensors onto CPU, using a device
-buffer.seek(0)
 
-loaded_model = torch.jit.load(buffer, map_location=torch.device('cpu'))
+
+def draw_box_local(image, boxes, classes, scores, category_index, thresh=0.5, line_thickness=20):
+    box_to_display_str_map = collections.defaultdict(list)
+    box_to_color_map = collections.defaultdict(str)
+    
+    col = int(random.random() * len(STANDARD_COLORS))
+    filter_low_thresh_local(boxes, scores, classes, category_index, thresh, box_to_display_str_map, box_to_color_map, col)
+
+    draw = ImageDraw.Draw(image)
+    im_width, im_height = image.size
+    for box, color in box_to_color_map.items():
+        xmin, ymin, xmax, ymax = box
+        (left, right, top, bottom) = (xmin * 1, xmax * 1,
+                                      ymin * 1, ymax * 1)
+        draw.line([(left, top), (left, bottom), (right, bottom),
+                   (right, top), (left, top)], width=line_thickness, fill=color)
+        
+def local_test(model, model_name, device, thresh):
+        # read class_indict
+    category_index = {"Grape": 1}
+    
+    origin_list = glob.glob('./test/imgs/*.jpg')
+    
+    preds = []
+    model.to(device)
+    times= []
+    for i, img_name in enumerate(origin_list):
+        # load image
+        original_img = Image.open(img_name)
+    
+        # from pil image to tensor, do not normalize image
+        data_transform = transforms.Compose([transforms.ToTensor()])
+        img = data_transform(original_img)
+        # expand batch dimension
+        img = torch.unsqueeze(img, dim=0)
+        img = list(img)
+        model.eval()
+        with torch.no_grad():
+            since = time.time()
+            predictions = model(img)
+            res = time.time() - since
+            print('{} Time:{}s'.format(i, res))
+            times.append(res)
+           # print(predictions)
+            predictions = predictions[1]
+            #print(type(predictions))
+            #print(predictions[1])
+            #print(predictions["boxes"])
+            predictions = predictions[0]
+            predict_boxes = predictions["boxes"].to("cpu").numpy()
+            predict_classes = predictions["labels"].to("cpu").numpy()
+            predict_scores = predictions["scores"].to("cpu").numpy()
+    
+            draw_box_local(original_img,
+                     predict_boxes,
+                     predict_classes,
+                     predict_scores,
+                     category_index,
+                     thresh=thresh,
+                     line_thickness=15)
+            plt.imshow(original_img)
+            plt.savefig(str(i) + model_name + ".jpg")
+            #plt.show()
+            
+    
+            predict = ""
+            for box, score in zip(predict_boxes, predict_scores):
+                str_box = ""
+                box[2] = box[2] - box[0]
+                box[3] = box[3] - box[1]
+                for b in box:
+                    str_box += str(b) + ' '
+                predict += str(score) + ' ' + str_box
+            preds.append(predict)
+    
+    return times
+
+torch.backends.quantized.engine = "qnnpack"
+model = torch.jit.load('./saved_models/Mob-Dynam-U.pt', map_location="cpu:0")
+print(model)
+model.eval()
+times = local_test(model, model_name="Mob-Dynam-U", device="cpu", thresh=0.6)
+all_t = np.sum(times)
+print(all_t/len(times))
 
 prev_frame_time = 0
 
 cap = cv.VideoCapture(0)
 
 
-loaded_model.eval()
+#loaded_model.eval()
+fps_arr = []
 
 model.eval()
 if not cap.isOpened():
@@ -197,7 +295,7 @@ while True:
     # we will be subtracting it to get more accurate result
     fps = 1/(new_frame_time-prev_frame_time)
     prev_frame_time = new_frame_time
- 
+    fps_arr.append(fps)
     # converting the fps to string so that we can display it on frame
     # by using putText function
     fps = str(fps)
@@ -208,14 +306,24 @@ while True:
 
     input_tensor = torch.tensor(np.expand_dims(image_np, 0), dtype=torch.float32)
     list_tensor = list(input_tensor)
-    visual_test(model, model_name="norm", device="cpu", frame=frame)
+    times = visual_test(model, model_name="norm", device="cpu", frame=frame)
     #cv.imshow('frame', image)
     cv.imshow('frame', frame)
    
     
     
-    if cv.waitKey(1) == ord('q'):
+    if len(fps_arr) == 100:
         break
 # When everything done, release the capture
 cap.release()
 cv.destroyAllWindows()
+fps = np.sum(fps_arr)
+print(fps / len(fps_arr))
+time_all = np.sum(times)
+print(time_all/len(times))
+f=open("Mob-Results", "a")
+f.write("FPS = " + str(fps/len(fps_arr)))
+f.write("\n")
+f.write("live_time = " + str(time_all/len(times)))
+f.write("\n")
+f.close()

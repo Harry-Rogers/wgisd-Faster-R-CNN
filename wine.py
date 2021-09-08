@@ -46,6 +46,249 @@ from torchvision.models.detection.rpn import AnchorGenerator
 from torchsummary import summary
 
 
+class FooBarPruningMethod(prune.BasePruningMethod):
+    """Prune every other entry in a tensor
+    """
+    PRUNING_TYPE = 'unstructured'
+    
+    
+    
+    def compute_mask(self, t, default_mask):
+        #mask = t.clone()
+        #Call function to get locations
+        #if location exists in mask set to 0
+        #print(t)
+        #print(len(t.grad))
+        
+        
+        values, location = torch.topk(t.grad, k=1, largest=False, sorted=False, dim=-1)
+        
+        #for i in range(len(location)):
+            #location = list(location)
+            #index = location.index(1)
+        #x = torch.nonzero(location)
+        #print(x)
+        #counter = 0
+        #print(location.shape)
+        #location = location.reshape([64, 3, 7, 7])
+        location = torch.reshape(location, (-1,))
+        origi = location
+        #print(location)
+        #t_dim_0 = t[0]
+        #print(t_dim_0.shape)
+        #print(len(t_dim_0))
+        #t_dim_0 = torch.reshape(t_dim_0, (-1,))
+        #x = location.shape
+        #print(type(x))
+        #print(x[0])
+        #print(type(x[0]))
+        #x = int(x[0])
+        origi_t = t.shape
+        #print(origi_t)
+        t = torch.reshape(t, (-1,))
+        #t_size = t.shape[0]
+        #print(t_size)
+        #print(location.shape[0])
+        
+        blocks = int(t.shape[0]) / int(location.shape[0])
+        blocks = int(blocks)
+        blocks = blocks/2
+        y=blocks
+        #print(y)
+        #time.sleep(5)
+        #x = blocks % 1
+        #if blocks % 1> 0:
+        #    x= blocks % 1
+        #else:
+        #    y = blocks
+        if y < 2:
+            y = 2
+        for i in range(int(y)):
+            location = torch.cat((location, location), 0)
+        #print(location)
+        #print(location.size())
+        while location.size() != t.size():
+         #   print("help")
+            location = location[:-origi.shape[0]]
+         #   print(location.size())
+         #   print(t.size())
+         #   time.sleep(5)
+            if location.size() == t.size():
+                break
+        #print("here")
+        #for i in range(x):
+        #    print("here")
+        #    print(location[i])
+        zero = torch.tensor(0, dtype=torch.float32, device="cuda")
+        mask = torch.where(location == 1, t, zero)
+        for i in range(0,len(location)):
+            if location[i] ==1:
+                t.data[i] = 0
+                #print("here")
+            
+        #print(mask)
+        #print(t)
+        #print(t.shape)
+        del t
+        del location
+        mask = torch.reshape(mask, (origi_t))
+        #print(mask.shape)
+        #print("here")
+        # for i in range(len(location)):
+       #     if str(location[i]) !="1":
+       #         counter = counter + 1
+       #     else:
+       #         counter = counter + 1
+       #         print(counter)
+            #elif str(location[i]) == "1":
+            #    counter = counter + 1
+            #    print(counter)
+                
+        #print((location == 2).nonzero(as_tuple=True))
+        #if 1 in location:
+            #print(location)
+        #dims = list(t.shape)
+        #print(dims)
+        #for i in range(1, len(dims)):
+        #    print(dims[i])
+        #print("vals")
+        #print(values)
+        
+        #minval = torch.min(t.grad)
+        #print(minval)
+        
+        #print("locs")
+        #print(location)
+        #print(t)
+        #time.sleep(5)
+        
+        #zero = torch.tensor(0, dtype=torch.float32, device="cuda")
+        #print(zero)
+        #print(location)
+        #time.sleep(5)
+        #shape_tensor = list(t.shape)
+        #print(shape_tensor)
+        #print(location)
+        #location = torch.reshape(location, (-1,))
+        #print(location)
+        #print(len(location))
+        #print(len(t))
+        #print(shape_tensor)
+        #print(t)
+        #for i in range(0,len(shape_tensor)):
+            #print(shape_tensor[i])
+            #print("here")
+            #print(i)
+            #print(t[i])
+            
+            #for i in range(t):
+                
+            #for ii in range(shape_tensor[i]):
+            #    print(t[ii])
+            #    print("there")
+            #for x in range(shape_tensor[i]):
+            #    print(shape_tensor[i][x])
+            #print(i)
+           # print(location[i])
+            #loc = location[i]
+            #t.data[i,loc] = 0
+            #print(t)
+            #print(t[i,loc])
+            
+            
+            
+            #indi = torch.where(location[i] >0, zero, t)
+            
+            
+        #print("hhh")
+        #print(indi)
+        
+        
+        #print(locations.shap)
+        #a = locations[0].unbind(0)
+        #print(a)
+        #for v in a:
+            #print(a[v])
+        #location = locations[0]
+        #for i in range(len(location)):
+        #    for x in range(len(mask)):
+        #        print(location[i])
+        #        if locations[i] > 1:
+        #            mask[x] = 0
+                
+        return mask
+
+def foobar_unstructured(module, name):
+    """Prunes tensor corresponding to parameter called `name` in `module`
+    by removing every other entry in the tensors.
+    Modifies module in place (and also return the modified module)
+    by:
+    1) adding a named buffer called `name+'_mask'` corresponding to the
+    binary mask applied to the parameter `name` by the pruning method.
+    The parameter `name` is replaced by its pruned version, while the
+    original (unpruned) parameter is stored in a new parameter named
+    `name+'_orig'`.
+
+    Args:
+        module (nn.Module): module containing the tensor to prune
+        name (string): parameter name within `module` on which pruning
+                will act.
+
+    Returns:
+        module (nn.Module): modified (i.e. pruned) version of the input
+            module
+
+    Examples:
+        >>> m = nn.Linear(3, 4)
+        >>> foobar_unstructured(m, name='bias')
+    """
+    FooBarPruningMethod.apply(module, name)
+    return module
+
+
+
+def draw_text(draw, box_to_display_str_map, box, left, right, top, bottom, color):
+    try:
+        font = ImageFont.truetype('arial.ttf', 24)
+    except IOError:
+        font = ImageFont.load_default()
+
+    display_str_heights = [font.getsize(ds)[1] for ds in box_to_display_str_map[box]]
+    total_display_str_height = (1 + 2 * 0.05) * sum(display_str_heights)
+
+    if top > total_display_str_height:
+        text_bottom = top
+    else:
+        text_bottom = bottom + total_display_str_height
+    for display_str in box_to_display_str_map[box][::-1]:
+        text_width, text_height = font.getsize(display_str)
+        margin = np.ceil(0.05 * text_height)
+        draw.rectangle([(left, text_bottom - text_height - 2 * margin),
+                        (left + text_width, text_bottom)], fill=color)
+        draw.text((left + margin, text_bottom - text_height - margin),
+                  display_str,
+                  fill='black',
+                  font=font)
+        text_bottom -= text_height - 2 * margin
+
+
+def draw_box(image, boxes, line_thickness=20):
+    box_to_display_str_map = collections.defaultdict(list)
+    box_to_color_map = collections.defaultdict(str)
+    
+    #col = int(random.random() * len(STANDARD_COLORS))
+    #filter_low_thresh(boxes, scores, classes, category_index, thresh, box_to_display_str_map, box_to_color_map, col)
+
+    draw = ImageDraw.Draw(image)
+    im_width, im_height = image.size
+    for box in boxes:
+        xmin, ymin, xmax, ymax = box
+        (left, right, top, bottom) = (xmin * 1, xmax * 1,
+                                      ymin * 1, ymax * 1)
+        draw.line([(left, top), (left, bottom), (right, bottom),
+                   (right, top), (left, top)], width=line_thickness, fill='black')
+        #draw_text(draw, box_to_display_str_map, box, left, right, top, bottom, color)
+
 class XMLHandler:
     def __init__(self, xml_path: str or Path):
         self.xml_path = Path(xml_path)
@@ -93,7 +336,7 @@ class GerpsFinder(object):
         # print(mask_path)
         # print(img_path)
         # print(idx)
-        # note that we haven't converted the mask to RGB,
+        # note that we haven't converted the mask to RGB,6
         # because each color corresponds to a different instance
         # with 0 being background
         boxes_to_send = []
@@ -111,6 +354,10 @@ class GerpsFinder(object):
             boxes_to_send.append([xmin, ymin, xmax, ymax])
         # print(objs)
         boxes = torch.as_tensor(boxes_to_send, dtype=torch.float32)
+        draw_box(img, boxes)
+        plt.imshow(img)
+        plt.savefig(str(img_path) + "_ground_truth.jpg")
+        plt.show()
         labels = torch.ones((objs,), dtype=torch.int64)
         image_id = torch.tensor([idx])
 
@@ -163,44 +410,35 @@ class QuantizedModel(nn.Module):
 
 
 def get_model_instance_segmentation(num_classes):    
-    # load a pre-trained model for classification and return
-    # only the features
-    #model = torchvision.models.quantization.resnet18()
-    # We would use the pretrained ResNet18 as a feature extractor.
-    #for param in model.parameters():
-    #    param.requires_grad = False
 
-    # Modify the last FC layer
-    #num_features = model.fc.in_features
-    #model.fc = nn.Linear(num_features, 5)
-    #model.load_state_dict(torch.load('./saved_models/resnet18_cifar10.pt', map_location="cuda:0"))
-    backbone = torchvision.models.quantization.resnet18(pretrained=True, quantize=False, norm_layer=misc_nn_ops.FrozenBatchNorm2d)
+    backbone = torchvision.models.quantization.resnet18(pretrained=True, quantize=False)
     backbone = torch.nn.Sequential(*(list(backbone.children())[:-4]))
 
     backbone = QuantizedModel(backbone)
-    # FasterRCNN needs to know the number of
-    # output channels in a backbone. For mobilenet_v2, it's 1280
-    # so we need to add it here
+    # # FasterRCNN needs to know the number of
+    # # output channels in a backbone. For mobilenet_v2, it's 1280
+    # # so we need to add it here
     backbone.out_channels = 512
     
-    # let's make the RPN generate 5 x 3 anchors per spatial
-    # location, with 5 different sizes and 3 different aspect
-    # ratios. We have a Tuple[Tuple[int]] because each feature
-    # map could potentially have different sizes and
-    # aspect ratios
+    # # let's make the RPN generate 5 x 3 anchors per spatial
+    # # location, with 5 different sizes and 3 different aspect
+    # # ratios. We have a Tuple[Tuple[int]] because each feature
+    # # map could potentially have different sizes and
+    # # aspect ratios
     anchor_generator = AnchorGenerator(sizes=((32, 64, 128, 256, 512),),
-                                   aspect_ratios=((0.5, 1.0, 2.0),))
+                                    aspect_ratios=((0.5, 1.0, 2.0),))
     
-    # let's define what are the feature maps that we will
-    # use to perform the region of interest cropping, as well as
-    # the size of the crop after rescaling.
-    # if your backbone returns a Tensor, featmap_names is expected to
-    # be [0]. More generally, the backbone should return an
-    # OrderedDict[Tensor], and in featmap_names you can choose which
-    # feature maps to use.
+    # # let's define what are the feature maps that we will
+    # # use to perform the region of interest cropping, as well as
+    # # the size of the crop after rescaling.
+    # # if your backbone returns a Tensor, featmap_names is expected to
+    # # be [0]. More generally, the backbone should return an
+    # # OrderedDict[Tensor], and in featmap_names you can choose which
+    # # feature maps to use.
     roi_pooler = torchvision.ops.MultiScaleRoIAlign(featmap_names=['0'],
-                                                    output_size=7,
-                                                    sampling_ratio=2)
+                                                     output_size=4,
+                                                     sampling_ratio=2)
+    
     
     # put the pieces together inside a FasterRCNN model
     model = FasterRCNN(backbone,
@@ -208,7 +446,6 @@ def get_model_instance_segmentation(num_classes):
                        rpn_anchor_generator=anchor_generator,
                        box_roi_pool=roi_pooler)
 
-    
     return model
 
 
@@ -293,7 +530,8 @@ def draw_text(draw, box_to_display_str_map, box, left, right, top, bottom, color
         text_bottom -= text_height - 2 * margin
 
 
-def draw_box(image, boxes, classes, scores, category_index, thresh=0.5, line_thickness=20):
+def draw_box(image, boxes, scores, classes, category_index, thresh=0.6, line_thickness=20):
+    #print(boxes)
     box_to_display_str_map = collections.defaultdict(list)
     box_to_color_map = collections.defaultdict(str)
     
@@ -302,13 +540,13 @@ def draw_box(image, boxes, classes, scores, category_index, thresh=0.5, line_thi
 
     draw = ImageDraw.Draw(image)
     im_width, im_height = image.size
-    for box, color in box_to_color_map.items():
+    for box in boxes:
         xmin, ymin, xmax, ymax = box
         (left, right, top, bottom) = (xmin * 1, xmax * 1,
                                       ymin * 1, ymax * 1)
         draw.line([(left, top), (left, bottom), (right, bottom),
-                   (right, top), (left, top)], width=line_thickness, fill=color)
-        draw_text(draw, box_to_display_str_map, box, left, right, top, bottom, color)
+                   (right, top), (left, top)], width=line_thickness, fill='black')
+        #draw_text(draw, box_to_display_str_map, box, left, right, top, bottom, color)
 
 def visual_test(model, model_name, device, thresh):
         # read class_indict
@@ -381,12 +619,12 @@ def main():
     # our dataset has two classes only - background and gerp
     num_classes = 2
     # use our dataset and defined transformations
-    dataset = GerpsFinder('./', get_transform(train=True), img_folder='train/imgs/', xml_folder='train/annos/')
+    dataset = GerpsFinder('./', get_transform(train=False), img_folder='train/imgs/', xml_folder='train/annos/')
     dataset_test = GerpsFinder('./', get_transform(train=False), img_folder='test/imgs/', xml_folder='test/annos/')
 
    # define training and testing data loaders
     data_loader = torch.utils.data.DataLoader(
-        dataset, batch_size=4, shuffle=True, num_workers=0,
+        dataset, batch_size=1, shuffle=True, num_workers=0,
         collate_fn=utils.collate_fn)
 
     data_loader_test = torch.utils.data.DataLoader(
@@ -408,7 +646,7 @@ def main():
                                                    gamma=0.1)
 
     # Train model
-    num_epochs = 25
+    num_epochs = 5
     params = []
     for name, param in model.named_parameters():
         if param.requires_grad:
@@ -420,31 +658,21 @@ def main():
     for epoch in range(num_epochs):
     #    # train for one epoch, printing every 10 iterations
         train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq=50,
-                        global_pruning=False, type_prune="", conv2d_prune_amount=0.1, linear_prune_amount=0.5, data_loader_test=data_loader_test)
+                        type_prune="structured", conv2d_prune_amount=0.01, linear_prune_amount=0.01)
         # update the learning rate
         lr_scheduler.step()
         # evaluate on the test dataset
         remove_parameters(model=model)
         coco_eval, metric_logger = evaluate(model, data_loader_test, device=device)
-        f= open("training_res18.txt", "a")
+        f= open("Mob-Dynam-DEL.txt", "a")
         f.write(str(metric_logger))
         f.write("\n")
         f.close()
     remove_parameters(model=model)
-    coco_eval, metric_logger = evaluate(model, data_loader_test, device=device)
-    #Change thresh manually
-    #visual_test(model, "mobile_net", device, thresh=0.6)
 
     model_dir = "saved_models"
-    model_filename = "Grapes-Res-Base18.pt"
-    
-    #visual_test(model,"Base", device="cpu", thresh=0.3)
-    #visual_test(model,"Base", device="cpu", thresh=0.4)
-    #visual_test(model,"Base", device="cpu", thresh=0.5)
-    #visual_test(model,"Base", device="cpu", thresh=0.6)
-    #visual_test(model,"Base", device="cpu", thresh=0.7)
-    #visual_test(model,"Base", device="cpu", thresh=0.8)
-    #visual_test(model,"Base", device="cpu", thresh=0.9)
+    model_filename = "RES-DEl.pt"
+
     
     
     
@@ -454,14 +682,19 @@ def main():
     torch.jit.save(torch.jit.script(model), model_filepath)
 
     fused_model = copy.deepcopy(model)
+    #Free up some space
+    del model
+    torch.cuda.empty_cache()
+    
+
     fused_model = torch.quantization.fuse_modules(fused_model,
-                                                  [["backbone.model.0", "backbone.model.2"]],
+                                                  [["backbone.model.0","backbone.model.1","backbone.model.2"]],
                                                   inplace=True)
     for module_name, module in fused_model.named_children():
         if "Sequential" in module_name:
             for basic_block_name, basic_block in module.named_children():
                 torch.quantization.fuse_modules(
-                    basic_block, [["conv1", "relu"], ["conv2"]],
+                    basic_block, [["conv1", "bn1", "relu"], ["conv2","bn2"]],
                     inplace=True)
                 for sub_block_name, sub_block in basic_block.named_children():
                     if sub_block_name == "downsample":
@@ -469,64 +702,54 @@ def main():
                                                         [["0", "1"]],
                                                         inplace=True)
 
-    #Free up some space
-    del model
-    torch.cuda.empty_cache()
     #Send to device
     
 
     fused_model.to(device)
     
     #Setup qconfig properly, can only quantise backbone so set everything else to none
+
     torch.backends.quantized.engine = 'qnnpack'
     quantization_config = torch.quantization.get_default_qconfig('qnnpack')
     fused_model.qconfig = quantization_config
-    
+
     fused_model.rpn.qconfig = None
     fused_model.roi_heads.qconfig = None
     
-    
+    print(fused_model.qconfig)
     torch.quantization.prepare_qat(fused_model, inplace=True)
     
     for epoch in range(num_epochs):
         train_one_epoch(fused_model, optimizer, data_loader, device, epoch, print_freq=50,
-                        global_pruning=False, type_prune="", conv2d_prune_amount=0, linear_prune_amount=0,data_loader_test=data_loader_test)
+                        type_prune="structured", conv2d_prune_amount=1, linear_prune_amount=1)
         # update the learning rate
         # update the learning rate
         lr_scheduler.step()
         # evaluate on the test dataset
         remove_parameters(model=fused_model)
         coco_eval, metric_logger = evaluate(fused_model, data_loader_test, device=device)
-        f= open("training_res18_QAT.txt", "a")
-        f.write(str(metric_logger))
-        f.write("\n")
-        f.close()
         # evaluate on the test dataset
     remove_parameters(model=fused_model)
-    evaluate(fused_model, data_loader_test, device=device)
+    #evaluate(fused_model, data_loader_test, device=device)
     
     fused_model.to('cpu:0')
 
-    # Using high-level static quantization wrapper
-    # The above steps, including torch.quantization.prepare, calibrate_model, and torch.quantization.convert, are also equivalent to
-    # quantized_model = torch.quantization.quantize_qat(model=quantized_model, run_fn=train_model, run_args=[train_loader, test_loader, cuda_device], mapping=None, inplace=False)
-    
     fused_model = torch.quantization.convert(fused_model, inplace=True)
+    
+    fused_model = torch.quantization.quantize_dynamic(fused_model,
+                                        {torch.nn.Linear},
+                                        dtype=torch.qint8)
 
     model_dir = "saved_models"
-    model_filename = "QAT-Res18-Base.pt"
+    model_filename = "Res-QAT-Dynam-SU.pt"
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
     model_filepath = os.path.join(model_dir, model_filename)
     torch.jit.save(torch.jit.script(fused_model), model_filepath)
     
-    #visual_test(fused_model,"QAT Base", device="cpu", thresh=0.3)
-    #visual_test(fused_model,"QAT Base", device="cpu", thresh=0.4)
-    #visual_test(fused_model,"QAT Base", device="cpu", thresh=0.5)
-    #visual_test(fused_model,"QAT Base", device="cpu", thresh=0.6)
-    #visual_test(fused_model,"QAT Base", device="cpu", thresh=0.7)
-    #visual_test(fused_model,"QAT Base", device="cpu", thresh=0.8)
-    #visual_test(fused_model,"QAT Base", device="cpu", thresh=0.9)
+
+    visual_test(fused_model,"Res-QAT-DYNAM-SU", device="cpu", thresh=0.6)
+
     print("Trained and saved!")
     
     

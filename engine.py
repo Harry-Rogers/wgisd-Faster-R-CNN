@@ -13,7 +13,10 @@ import utils
 
 import io
 
-def train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq, global_pruning, conv2d_prune_amount, linear_prune_amount):
+
+
+
+def train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq, type_prune, conv2d_prune_amount, linear_prune_amount, flag=False):
     model.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -28,30 +31,68 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq, gl
     
     
     
-    if global_pruning == True:
-            # Global pruning
-            # I would rather call it grouped pruning.
-            parameters_to_prune = []
-            for module_name, module in model.named_modules():
-                if isinstance(module, torch.nn.Conv2d):
-                    parameters_to_prune.append((module, "weight"))
-            prune.global_unstructured(
-                parameters_to_prune,
-                pruning_method=prune.L1Unstructured,
-                amount=conv2d_prune_amount,
-            )
-    else:
-        
+    
+    if type_prune == 'unstructured':
         for module_name, module in model.named_modules():
             if isinstance(module, torch.nn.Conv2d):
                 prune.l1_unstructured(module,
-                                          name="weight",
-                                          amount=conv2d_prune_amount)
+                                      name="weight",
+                                      amount=conv2d_prune_amount)
             elif isinstance(module, torch.nn.Linear):
-                    prune.l1_unstructured(module,
-                                          name="weight",
-                                          amount=linear_prune_amount)
-    
+                prune.l1_unstructured(module,
+                                      name="weight",
+                                      amount=linear_prune_amount)
+                prune.l1_unstructured(module,
+                                      name="bias",
+                                      amount=linear_prune_amount)
+    elif type_prune == "structured":
+        if flag == True and epoch > 0:
+            print("no struct pruning")
+        else:
+            print("here struct")
+            
+            try:
+                for module_name, module in model.named_modules():
+                    #print("model names")
+                    if isinstance(module, torch.nn.Conv2d):
+
+                        prune.ln_structured(module,
+                                            name="weight",
+                                            amount=conv2d_prune_amount,
+                                            n=1,
+                                            dim=0)
+                        prune.ln_structured(module,
+                                            name="weight",
+                                            amount=conv2d_prune_amount,
+                                            n=1,
+                                            dim=1)
+                        prune.ln_structured(module,
+                                            name="weight",
+                                            amount=conv2d_prune_amount,
+                                            n=1,
+                                            dim=2)
+                        prune.ln_structured(module,
+                                            name="weight",
+                                            amount=conv2d_prune_amount,
+                                            n=1,
+                                            dim=3)
+                    elif isinstance(module, torch.nn.Linear):
+                        prune.ln_structured(module,
+                                            name="weight",
+                                            amount=linear_prune_amount,
+                                            n=1,
+                                            dim=0)
+                        prune.ln_structured(module,
+                                            name="weight",
+                                            amount=linear_prune_amount,
+                                            n=1,
+                                            dim=1)
+            except Exception:
+                pass
+                    
+                  
+                       
+       
     
     
     for images, targets in metric_logger.log_every(data_loader, print_freq, header):
@@ -72,7 +113,7 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq, gl
             print("Loss is {}, stopping training".format(loss_value))
             print(loss_dict_reduced)
             sys.exit(1)
-
+      
         optimizer.zero_grad()
         losses.backward()
         optimizer.step()
@@ -131,7 +172,6 @@ def evaluate(model, data_loader, device):
     metric_logger.synchronize_between_processes()
     
     print(metric_logger)
-    #time.sleep(5)
     print("Averaged stats:", metric_logger)
     coco_evaluator.synchronize_between_processes()
 
@@ -146,7 +186,5 @@ def evaluate(model, data_loader, device):
     output = new_stdout.getvalue()
             
     sys.stdout = old_stdout
-    print("HEREHRE")
-    print(str(test))
     torch.set_num_threads(n_threads)
     return coco_evaluator.summarize(), output

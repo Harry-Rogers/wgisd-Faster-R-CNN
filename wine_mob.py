@@ -84,16 +84,9 @@ class GerpsFinder(object):
         img_path = os.path.join(self.root, self.img_folder, self.imgs[idx])
         mask_path = os.path.join(self.root, self.xml_folder, self.masks[idx])
         img = Image.open(img_path).convert("RGB")
-        # print(mask_path)
-        # print(img_path)
-        # print(idx)
-        # note that we haven't converted the mask to RGB,
-        # because each color corresponds to a different instance
-        # with 0 being background
         boxes_to_send = []
         xml_content = XMLHandler(mask_path)
         boxes = xml_content.return_boxes_class_as_dict()
-        # print(boxes)
         objs = 0
         for box_index in boxes:
             box = boxes[box_index]
@@ -103,14 +96,13 @@ class GerpsFinder(object):
             xmax = int(box['xmax'])
             ymax = int(box['ymax'])
             boxes_to_send.append([xmin, ymin, xmax, ymax])
-        # print(objs)
+    
         boxes = torch.as_tensor(boxes_to_send, dtype=torch.float32)
         labels = torch.ones((objs,), dtype=torch.int64)
         image_id = torch.tensor([idx])
 
         area = (boxes[:, 3] - boxes[:, 1]) * (boxes[:, 2] - boxes[:, 0])
-        # print(area)
-        # suppose all instances are not crowd
+
         iscrowd = torch.zeros((objs,), dtype=torch.int64)
 
         target = {}
@@ -134,24 +126,15 @@ class QuantizedModel(nn.Module):
     def __init__(self, model_fp32):
 
         super(QuantizedModel, self).__init__()
-        # QuantStub converts tensors from floating point to quantized.
-        # This will only be used for inputs.
+
         self.quant = torch.quantization.QuantStub()
-        # DeQuantStub converts tensors from quantized to floating point.
-        # This will only be used for outputs.
-        
-        # FP32 model
         self.model_fp32 = model_fp32
-        
         self.dequant = torch.quantization.DeQuantStub()
 
     def forward(self, x):
-        # manually specify where tensors will be converted from floating
-        # point to quantized in the quantized model
+
         x = self.quant(x)
         x = self.model_fp32(x)
-        # manually specify where tensors will be converted from quantized
-        # to floating point in the quantized model
         x = self.dequant(x)
         return x
 
@@ -165,13 +148,13 @@ def get_model_instance_segmentation(num_classes):
     #242 MB for v3 large
     #329MB for v2?
     # only the features
-    backbone = torchvision.models.quantization.mobilenet_v2(pretrained=True, quantize=False, norm_layer=misc_nn_ops.FrozenBatchNorm2d).features
+    backbone = torchvision.models.quantization.mobilenet_v3_large(pretrained=True, quantize=False).features
 
     backbone = QuantizedModel(backbone)
     # FasterRCNN needs to know the number of
     # output channels in a backbone. For mobilenet_v2, it's 1280
     # so we need to add it here
-    backbone.out_channels = 1280
+    backbone.out_channels = 960
     
     # let's make the RPN generate 5 x 3 anchors per spatial
     # location, with 5 different sizes and 3 different aspect
@@ -189,7 +172,7 @@ def get_model_instance_segmentation(num_classes):
     # OrderedDict[Tensor], and in featmap_names you can choose which
     # feature maps to use.
     roi_pooler = torchvision.ops.MultiScaleRoIAlign(featmap_names=['0'],
-                                                    output_size=7,
+                                                    output_size=4,
                                                     sampling_ratio=2)
     
     # put the pieces together inside a FasterRCNN model
@@ -401,16 +384,13 @@ def main():
                                                    step_size=3,
                                                    gamma=0.1)
 
-    # let's train it for 10 epochs
-    num_epochs = 1
-    params = []
-    params = list(model.parameters())
+    # 25 epochs
+    num_epochs = 25
 
-    print(model)
     for epoch in range(num_epochs):
     #    # train for one epoch, printing every 10 iterations
         train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq=10,
-                        global_pruning=True, type_prune="", conv2d_prune_amount=0, linear_prune_amount=0)
+                        global_pruning=True, type_prune="", conv2d_prune_amount=0, linear_prune_amount=0, data_loader_test=data_loader_test)
         for i in range(len(params)):
             print(torch.topk(params[i].grad,1))
         # update the learning rate
@@ -418,12 +398,10 @@ def main():
         # evaluate on the test dataset
     remove_parameters(model=model)
     coco_eval, metric_logger = evaluate(model, data_loader_test, device=device)
-    #Change thresh manually
-    #visual_test(model, "mobile_net", device, thresh=0.6)
+
 
     model_dir = "saved_models"
-    model_filename = "tv-training-Mob.pt"
-   # visual_test(model, "Normal", 'cuda')
+    model_filename = "Mob.pt"
     
     
     if not os.path.exists(model_dir):
@@ -454,47 +432,52 @@ def main():
     fused_model.to(device)
     print(fused_model)
     
-    torch.backends.quantized.engine = 'fbgemm'
-    quantization_config = torch.quantization.get_default_qconfig('fbgemm')
-    fused_model.qconfig = quantization_config
     
+    
+    
+    torch.backends.quantized.engine = 'qnnpack'
+    quantization_config = torch.quantization.get_default_qconfig('qnnpack')
+    fused_model.qconfig = quantization_config
+
     fused_model.rpn.qconfig = None
     fused_model.roi_heads.qconfig = None
-    #fused_model.box_predictor.qconfig = None
-    print(quantization_config)
-    #fused_model.
+    
+    print(fused_model.qconfig)
     torch.quantization.prepare_qat(fused_model, inplace=True)
     
     for epoch in range(num_epochs):
-        train_one_epoch(fused_model, optimizer, data_loader, device, epoch, print_freq=10,
-                        global_pruning=True, type_prune="", conv2d_prune_amount=0, linear_prune_amount=0)
+        train_one_epoch(fused_model, optimizer, data_loader, device, epoch, print_freq=50,
+                        type_prune="structured", conv2d_prune_amount=1, linear_prune_amount=1)
+        # update the learning rate
         # update the learning rate
         lr_scheduler.step()
         # evaluate on the test dataset
+        remove_parameters(model=fused_model)
+        coco_eval, metric_logger = evaluate(fused_model, data_loader_test, device=device)
+        # evaluate on the test dataset
     remove_parameters(model=fused_model)
-    evaluate(fused_model, data_loader_test, device=device)
+    #evaluate(fused_model, data_loader_test, device=device)
     
     fused_model.to('cpu:0')
-    
-    #visual_test(fused_model, "QAT_AWARE_MOBILE", 'cpu', thresh=0.6)
 
-    # Using high-level static quantization wrapper
-    # The above steps, including torch.quantization.prepare, calibrate_model, and torch.quantization.convert, are also equivalent to
-    # quantized_model = torch.quantization.quantize_qat(model=quantized_model, run_fn=train_model, run_args=[train_loader, test_loader, cuda_device], mapping=None, inplace=False)
-    
     fused_model = torch.quantization.convert(fused_model, inplace=True)
-
+    
+    fused_model = torch.quantization.quantize_dynamic(fused_model,
+                                        {torch.nn.Linear},
+                                        dtype=torch.qint8)
+    
     model_dir = "saved_models"
-    model_filename = "tv-training-QAT-Mob.pt"
+    model_filename = "Mob-QAT-DYNAM-S.pt"
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
     model_filepath = os.path.join(model_dir, model_filename)
     torch.jit.save(torch.jit.script(fused_model), model_filepath)
     print(fused_model)
     
+    visual_test(fused_model,"Mob-QAT-DYNAM-S", device="cpu", thresh=0.6)
+    
     
     print("That's it!")
-    
     
 if __name__ == "__main__":
     main()
